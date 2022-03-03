@@ -1,0 +1,138 @@
+---
+title: "DSA_lung_NOX/HYX"
+output: html_notebook
+---
+
+
+```{r}
+library(SingleCellExperiment)
+library(Seurat)
+library(muscat)
+library(ggplot2)
+library(dplyr)
+library(fgsea)
+```
+
+```{r}
+memory.limit(size=90000)
+seurat <- readRDS("C:/Users/.../seurat.rds")
+```
+
+# Differential state analysis
+```{r}
+seurat.tmp <- seurat
+seurat.tmp$UniqueSample <- paste(seurat.tmp$orig.ident)
+# Technically P3_P7_1_Bar1 and P3_P7_2_Bar1, for example, are the same mice--should merge
+seurat.tmp$UniqueSample[seurat.tmp$UniqueSample %in% c("P3_P7_1", "P3_P7_2")] <- "P3_P7"
+seurat.tmp$UniqueSample <- paste(seurat.tmp$UniqueSample, seurat.tmp$Barcode, sep="_")
+
+DefaultAssay(seurat.tmp) <- "RNA" #can switch back to integrated if desired
+
+seurat.sce <- as.SingleCellExperiment(seurat.tmp)
+
+seurat.sce <- prepSCE(seurat.sce,
+                      kid = "CellType_II",
+                      gid = "Oxygen",
+                      sid = "UniqueSample",
+                      drop=T)
+seurat.sce$group_id <- factor(seurat.sce$group_id, levels=c("Normoxia", "Hyperoxia"))
+
+
+pb <- aggregateData(seurat.sce,
+                    assay = "counts", fun = "sum",
+                    by = c("cluster_id", "sample_id"))
+
+pb$group_id <- factor(pb$group_id, levels=c("Normoxia", "Hyperoxia"))
+res <- pbDS(pb, verbose = FALSE)
+tmp <- seurat.sce
+counts(tmp) <- as.matrix(counts(tmp))
+result_table <- resDS(tmp, res, bind = "row", frq = FALSE, cpm = FALSE)
+rm(tmp)
+
+#Trim columns we don't really care about
+result_table$p_adj.glb <- NULL
+
+#Get the frequency of Nox/Hyx cells in a cluster that express a gene
+count_mat <- as.matrix(seurat[["RNA"]]@data) > 0
+cluster_list <- unique(result_table$cluster_id)
+result_table$Normoxia.frq <- 0
+normoxia_cells <- colnames(seurat)[seurat$Oxygen == "Normoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$CellType_II == cluster_list[i]]
+  test_cells <- intersect(normoxia_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$Normoxia.frq[row_ind] <- frq
+}
+hyperoxia_cells <- colnames(seurat)[seurat$Oxygen == "Hyperoxia"]
+result_table$Hyperoxia.frq <- 0
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$CellType_II == cluster_list[i]]
+  test_cells <- intersect(hyperoxia_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$Hyperoxia.frq[row_ind] <- frq
+}
+
+
+write.csv(result_table, file = "C:/Users/.../DSA_lung_NOX/HYX.csv", row.names = F)
+```
+
+
+
+# GSEA on all CellTypes by logFC
+```{r}
+hallmarks <- fgsea::gmtPathways("C:/Users/.../GeneLists/h.all.v7.2.symbols.gmt")
+kegg <- fgsea::gmtPathways("C:/Users/.../GeneLists/c2.cp.kegg.v7.2.symbols.gmt")
+go <- fgsea::gmtPathways("C:/Users/.../GeneLists/c5.go.v7.2.symbols.gmt")
+reactome <- fgsea::gmtPathways("C:/Users/.../GeneLists/c2.cp.reactome.v7.2.symbols.gmt")
+
+gene_sets <- c(hallmarks, kegg, go, reactome)
+```
+
+```{r}
+runGSEA <- function(cluster){
+  results <- filter(result_table, cluster_id == cluster)
+  results <- filter(results, Normoxia.frq >= 0.05 |
+                      Hyperoxia.frq >= 0.05)
+  results <- arrange(results, desc(logFC))
+  
+  cluster_genes <- results$logFC
+  names(cluster_genes) <- toupper(results$gene)
+  
+  gsea <- fgsea(pathways = gene_sets,
+                stats = cluster_genes,
+                minSize=15,
+                maxSize=500)
+  gsea$cluster <- cluster
+  
+  return(gsea)
+}
+```
+
+
+```{r}
+cluster_list <- unique(result_table$cluster_id)
+
+fgsea_results <- lapply(cluster_list, runGSEA)
+fgsea_results <- do.call("rbind", fgsea_results)
+fgsea_results <- as.data.frame(fgsea_results)
+fgsea_results$leadingEdge <- as.character(fgsea_results$leadingEdge)
+```
+```{r}
+writexl::write_xlsx(fgsea_results, path = "C:/Users/.../GSEA_lung_NOX/HYX.xlsx")
+```
+  
+
+
+
+
+
+
+
+
+

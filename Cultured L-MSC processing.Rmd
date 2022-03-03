@@ -1,0 +1,297 @@
+---
+title: "LR-MSC"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(deMULTIplex)
+library(tidyverse)
+```
+
+```{r}
+msc_mat <- Read10X("../data/MSC_SC/filtered_feature_bc_matrix/")
+```
+
+```{r}
+msc <- CreateSeuratObject(msc_mat,
+                          min.cells = 3,
+                          min.features = 200)
+```
+
+# Basic processing
+```{r}
+msc[["percent.mito"]] <- PercentageFeatureSet(msc, pattern = "^mt-")
+VlnPlot(msc, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), pt.size=0.25,
+        ncol = 3)
+```
+
+
+```{r}
+plot(msc$nFeature_RNA, msc$nCount_RNA, pch=20)
+```
+
+```{r}
+hist(msc$percent.mito, breaks=100)
+abline(v=15)
+```
+
+```{r}
+msc <- subset(msc,
+              subset = percent.mito <= 15)
+```
+
+
+```{r}
+msc <- NormalizeData(msc)
+msc <- FindVariableFeatures(msc)
+msc <- ScaleData(msc)
+msc <- RunPCA(msc, verbose=F)
+msc <- RunUMAP(msc, dims=1:30)
+```
+
+```{r}
+DimPlot(msc)
+FeaturePlot(msc, features="percent.mito")
+FeaturePlot(msc, features="nCount_RNA")
+```
+
+```{r}
+msc_keep <- colnames(msc)
+msc_keep <- gsub("-1", "", msc_keep)
+```
+
+# Demultiplex
+```{r}
+bar.ref <- read.csv("../data/LMOlist.csv", header=F)$V1
+```
+
+Organizing the barcodes
+```{r}
+barcode_locations <- data.frame(barcode = paste0("Bar", 1:96),
+                                location = c(paste0(c(rep("A",12),
+                                                      rep("B", 12),
+                                                      rep("C", 12),
+                                                      rep("D", 12),
+                                                      rep("E", 12),
+                                                      rep("F", 12),
+                                                      rep("G", 12),
+                                                      rep("H", 12)), 1:12)))
+```
+
+```{r}
+sample_annotations <- data.frame(sample = c(rep("NOX1+", 4),
+                                            rep("NOX2+", 4),
+                                            rep("NOX3+", 4),
+                                            rep("NOX1-", 4),
+                                            rep("NOX2-", 4),
+                                            rep("NOX3-", 4),
+                                            rep("HYX1+", 4),
+                                            rep("HYX2+", 4),
+                                            rep("HYX3+", 4),
+                                            rep("HYX1-", 4),
+                                            rep("HYX2-", 4),
+                                            rep("HYX3-", 4)),
+                                 location = c("A1", "B4", "D4", "D1",
+                                              "A7", "B7", "C7", "D7",
+                                              "A8", "B8", "C8", "D8",
+                                              "A9", "B9", "C9", "D9",
+                                              "A10", "D10", "E10", "G10",
+                                              "C12", "B5", "C5", "D5",
+                                              "E1", "E4", "G1", "H1",
+                                              "E7", "F7", "G7", "H7",
+                                              "E8", "F8", "G8", "H8",
+                                              "E9", "F9", "G9", "H9",
+                                              "A11", "D11", "E11", "G11",
+                                              "E5", "F5", "G5", "H5"))
+```
+
+```{r}
+barcode_locations <- left_join(barcode_locations, sample_annotations, by="location")
+```
+
+```{r}
+used_barcodes <- !is.na(barcode_locations$sample)
+```
+
+
+## Quantify barcodes from fastq files
+```{r}
+readTable <- MULTIseq.preProcess(R1 = "../fastq/MSC_R1_paired.fastq.gz",
+                                 R2 = "../fastq/MSC_R2_paired.fastq.gz",
+                                 cellIDs = msc_keep)
+MSC_bar_table <- MULTIseq.align(readTable, msc_keep, bar.ref)
+write.csv(MSC_bar_table, file="../data/MSC_barcode_counts.csv", quote=F)
+```
+
+## MSC annotation
+```{r}
+MSC_bar_table <- read.csv("../data/MSC_barcode_counts.csv", row.names=1)
+```
+
+```{r}
+MSC_tsne <- barTSNE(MSC_bar_table[,barcode_locations[used_barcodes, "barcode"]])
+```
+
+```{r}
+msc.temp <- MSC_bar_table
+msc.temp$TSNE1 <- MSC_tsne$TSNE1
+msc.temp$TSNE2 <- MSC_tsne$TSNE2
+write.csv(msc.temp, file="../output/MSC_barcode_tsne.csv", quote=F)
+```
+
+```{r}
+temp <- as.matrix(MSC_tsne[,3:ncol(MSC_tsne)])
+temp[temp<0] <- 0
+temp <- as.data.frame(temp)
+temp$TSNE1 <- MSC_tsne$TSNE1
+temp$TSNE2 <- MSC_tsne$TSNE2
+
+
+for (LMO in colnames(MSC_tsne)[3:50]){
+  png(filename = paste0("../figs/LMOs/MSC/",LMO,".png"), width = 700, height = 600)
+  p <- ggplot(data=temp, aes_string(x="TSNE1",y="TSNE2",color=LMO)) + geom_point() +
+    scale_color_gradient(low="lightgrey",high="red") +
+    theme_void()
+  print(p)
+  dev.off()
+}
+```
+
+```{r}
+MSC_bar_filtered <- MSC_bar_table[,barcode_locations[used_barcodes, "barcode"]]
+```
+
+```{r}
+bar.table_sweep.list <- list()
+n <- 0
+for (q in seq(0.01, 0.99, by=0.02)) {
+  print(q)
+  n <- n + 1
+  bar.table_sweep.list[[n]] <- classifyCells(MSC_bar_filtered, q=q)
+  names(bar.table_sweep.list)[n] <- paste("q=",q,sep="")
+}
+```
+
+```{r}
+threshold.results1 <- findThresh(call.list=bar.table_sweep.list)
+ggplot(data=threshold.results1$res, aes(x=q, y=Proportion, color=Subset)) + geom_line() + theme(legend.position = "none") +
+  geom_vline(xintercept=threshold.results1$extrema, lty=2) + scale_color_manual(values=c("red","black","blue"))
+```
+
+```{r}
+## Finalize round 1 classifications, remove negative cells
+round1.calls <- classifyCells(MSC_bar_filtered, q=findQ(threshold.results1$res, threshold.results1$extrema))
+neg.cells <- names(round1.calls)[which(round1.calls == "Negative")]
+MSC_bar_filtered <- MSC_bar_filtered[-which(rownames(MSC_bar_filtered) %in% neg.cells), ]
+```
+
+```{r}
+MSC_tsne$Classification <- "Singlet"
+MSC_tsne$Classification[which(round1.calls[rownames(MSC_tsne)]=="Doublet")] <- "Doublet"
+MSC_tsne$Classification[which(round1.calls[rownames(MSC_tsne)]=="Negative")] <- "Negative"
+```
+
+```{r}
+table(MSC_tsne$Classification)
+```
+
+```{r}
+tsne_classification <- ggplot(MSC_tsne, aes(x=TSNE1, y=TSNE2)) +
+  geom_point(size=0.25, aes(color=Classification)) +
+  theme_void()
+ggsave(tsne_classification, file="../figs/MSC_Barcode_TSNE.png",
+       width=6, height=4.5)
+tsne_classification
+```
+
+## Assess sample classifications on TSNE
+```{r}
+msc_samples <- unique(round1.calls)
+plotSampleTSNE <- function(sample){
+  data <- MSC_tsne
+  data$Sample <- "Other"
+  data$Sample[which(round1.calls[rownames(MSC_tsne)]==sample)] <- sample
+  sample_plot <- ggplot(data, aes(x=TSNE1, y=TSNE2)) +
+    geom_point(size=0.25, alpha=0.5, aes(color=Sample)) +
+    scale_color_manual(values=c("red", "lightgrey")) +
+    theme_void()
+  ggsave(sample_plot, file=paste0("../figs/LMOs/MSC/Classifications/", 
+         sample,".png"), width=5, height=3.2)
+}
+```
+
+```{r}
+lapply(msc_samples, plotSampleTSNE)
+```
+
+```{r}
+msc$Barcode <- round1.calls
+```
+
+```{r}
+msc$Sample <- barcode_locations$sample[match(msc$Barcode, barcode_locations$barcode)]
+```
+
+Add some extra annotations
+```{r}
+msc$Oxygen <- "NA"
+msc$Oxygen[grep("HYX", msc$Sample)] <- "HYX"
+msc$Oxygen[grep("NOX", msc$Sample)] <- "NOX"
+```
+
+```{r}
+DimPlot(msc, group.by="Barcode", label=T)
+DimPlot(msc, group.by="Sample", label=T)
+DimPlot(msc, group.by="Oxygen", label=T)
+```
+
+Find Markers on the low-content cluster showed absolutely nothing. No evidence it's a distinct population. Let's apply a filter for RNA content
+
+```{r}
+hist(msc$nCount_RNA, breaks=100)
+abline(v=2000)
+```
+
+
+```{r}
+msc <- subset(msc, subset = nCount_RNA >= 2000)
+```
+
+```{r}
+msc <- NormalizeData(msc)
+msc <- FindVariableFeatures(msc)
+msc <- ScaleData(msc)
+msc <- RunPCA(msc, verbose=F)
+msc <- RunUMAP(msc, dims=1:30)
+```
+
+
+```{r}
+saveRDS(msc, file="../data/seurat_unfiltered.rds")
+```
+
+# Filter
+```{r}
+library(Hmisc)
+cells_keep <- colnames(msc)[msc$Barcode %nin% c("Doublet", "Negative")]
+msc <- subset(msc, cells=cells_keep)
+```
+
+```{r}
+msc <- SCTransform(msc, vars.to.regress="percent.mito") 
+msc <- RunPCA(msc, verbose=F)
+msc <- RunUMAP(msc, dims=1:30)
+msc <- FindNeighbors(msc, dims=1:30)
+msc <- FindClusters(msc, resolution=0.1)
+```
+
+```{r}
+DimPlot(msc, group.by="Barcode", label=T)
+DimPlot(msc, group.by="Sample", label=T)
+DimPlot(msc, group.by="Oxygen", label=T)
+```
+
+```{r}
+saveRDS(msc, file="../data/seurat_filtered.rds")
+```

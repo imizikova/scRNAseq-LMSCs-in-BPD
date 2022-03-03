@@ -1,0 +1,361 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(viridis)
+library(dplyr)
+library(pheatmap)
+library(tidyr)
+```
+
+```{r}
+memory.limit(size=90000)
+stromal <- readRDS("C:/Users/.../stromal_cells.rds")
+```
+
+```{r}
+stromal = UpdateSeuratObject(object = stromal)
+```
+```{r}
+DefaultAssay(stromal) <- "RNA"
+```
+
+
+#Add CellType
+```{r}
+stromal$CellType <- "NA"
+stromal$CellType[stromal$seurat_clusters %in% c("0")] <- "Col13a1+ fibroblast"
+stromal$CellType[stromal$seurat_clusters %in% c("1")] <- "Myofibroblast"
+stromal$CellType[stromal$seurat_clusters %in% c("2")] <- "Col14a1+ fibroblast"
+stromal$CellType[stromal$seurat_clusters %in% c("3")] <- "Pericyte 1"
+stromal$CellType[stromal$seurat_clusters %in% c("4")] <- "Pericyte 2"
+stromal$CellType[stromal$seurat_clusters %in% c("5")] <- "Fibromyo/SMCs"
+```
+```{r}
+stromal$CellType <- factor(stromal$CellType)
+levels(stromal$CellType)
+```
+
+
+#Add Ly6a Groups
+```{r}
+stromal$Groups<- "NA"
+stromal$Groups[stromal[["RNA"]]@data["Ly6a",] > 0] <- "Ly6a+"
+stromal$Groups[stromal[["RNA"]]@data["Ly6a",]  == 0] <- "Ly6a-"
+```
+```{r}
+stromal$Groups <- factor(stromal$Groups)
+levels(stromal$Groups)
+```
+
+
+#Add Ly6a+ L-MSC (CellType_II)
+```{r}
+stromal$CellType_II <- "NA"
+stromal$CellType_II[stromal$Groups== "Ly6a+"] <- "Ly6a+ L-MSC"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Col13a1+ fibroblast"] <- "Col13a1+ fibroblast"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Myofibroblast"] <- "Myofibroblast"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Col14a1+ fibroblast"] <- "Col14a1+ fibroblast"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Pericyte 1"] <- "Pericyte 1"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Pericyte 2"] <- "Pericyte 2"
+stromal$CellType_II[stromal$Groups== "Ly6a-" & stromal$CellType== "Fibromyo/SMCs"] <- "Fibromyo/SMCs"
+```
+```{r}
+stromal$CellType_II <- factor(stromal$CellType_II)
+levels(stromal$CellType_II)
+```
+
+#Add Ly6aGroups
+```{r}
+stromal$Ly6aGroups <- "NA"
+stromal$Ly6aGroups[stromal$Groups %in% c("Ly6a+") & stromal$Oxygen %in% c("Normoxia")] <- "Ly6a+_NOX"
+stromal$Ly6aGroups[stromal$Groups %in% c("Ly6a+") & stromal$Oxygen %in% c("Hyperoxia")] <- "Ly6a+_HYX"
+stromal$Ly6aGroups[stromal$Groups %in% c("Ly6a-") & stromal$Oxygen %in% c("Normoxia")] <- "Ly6a-_NOX"
+stromal$Ly6aGroups[stromal$Groups %in% c("Ly6a-") & stromal$Oxygen %in% c("Hyperoxia")] <- "Ly6a-_HYX"
+```
+```{r}
+stromal$Ly6aGroups <- factor(stromal$Ly6aGroups)
+levels(stromal$Ly6aGroups)
+```
+
+
+#Save point
+```{r}
+saveRDS(stromal, file="C:/Users/.../stromal_cells.rds")
+```
+
+
+#Find markers for CellType_II
+```{r}
+Idents(stromal)<- "CellType_II"
+```
+```{r}
+markers <- FindAllMarkers(stromal, logfc.threshold=1, only.pos=T)
+write.csv(markers, file="C:/Users/.../stroma_cluster_markers.csv", quote=F)
+```
+
+```{r}
+stromal.markers <- read.csv("C:/Users/.../stroma_cluster_markers.csv",row.names=1)
+```
+```{r}
+stromal.markers_II %>% group_by(cluster) %>% top_n(10, wt=avg_log2FC) 
+```
+
+
+#MAKE SIMPLIFIED HEATMAP
+```{r}
+Idents(stromal)<- "CellType_II"
+```
+
+```{r}
+stromal.markers <- read.csv("C:/Users/.../stroma_cluster_markers_top 10.csv",row.names=1)
+```
+# Get list of clusters/cell types
+```{r}
+cluster_list <- levels(Idents(stromal))
+```
+# Get top markers
+```{r}
+top_markers <- stromal.markers %>% 
+  group_by(cluster) %>% 
+  top_n(n=10, wt = avg_log2FC) %>% 
+  pull(gene) 
+```
+# Make function to calculate average expression in each cluster
+```{r}
+getAvgExp <- function(cluster){
+  cells <- colnames(stromal)[Idents(stromal) == cluster] 
+  avg <- rowMeans(as.matrix(stromal[["RNA"]]@data[top_markers, cells])) 
+  return(avg)}
+```
+# Calculate average expression of top_markers in each cluster
+```{r}
+avg_exp <- lapply(cluster_list, getAvgExp)
+avg_exp <- do.call("cbind", avg_exp)
+colnames(avg_exp) <- cluster_list
+```
+# Transform values to Z-scores
+```{r}
+avg_exp <- t(scale(t(avg_exp), scale=T, center=T))
+```
+# Make heatmap
+```{r}
+pheatmap(t(avg_exp),
+         color = viridis::inferno(105),
+         cluster_rows = F,
+         cluster_cols = F, 
+         border_color="black", 
+         breaks = seq(-0.5, 2, length.out=101), 
+         legend=T, 
+         filename = "C:/Users/.../Stroma_cluster markers_top10.png", dpi=600, width = 12, height = 2.5) 
+```
+
+
+
+# Calculate the number of cells in each Ly6aGroup for each individual animal and time point
+```{r}
+stromal$UniqueSample <- paste(stromal$orig.ident, stromal$Oxygen, stromal$Barcode, sep = "_")
+
+clusters_freq <- stromal@meta.data %>%
+  group_by(UniqueSample, Ly6aGroups) %>%
+  summarise(n=n()) %>%
+  mutate(relative_freq = n/sum(n))
+
+write.csv(clusters_freq, file="C:/Users/.../Ly6aGroups_cell_frequency.csv", quote=F,
+          row.names = F)
+```
+
+
+#Subset NOX cells
+```{r}
+cells_keep <- colnames(stromal)[stromal$Oxygen %in% c("Normoxia")]
+stromal_NOX <- subset(stromal, cells=cells_keep)
+saveRDS(stromal_NOX, file="C:/Users/.../stromal_cells_NOX.rds")
+```
+```{r}
+stromal_NOX <- readRDS("C:/Users/.../stromal_cells_NOX.rds")
+```
+
+#DotPlot_ NOX _gene expression in Ly6a L-MSC
+```{r}
+df <- as.matrix(stromal_NOX[["RNA"]]@data[c("Mmp3", "Inmt", "Aldh1a1", "Hlf", "Mettl7a1", "Enpp2", "Podn", "Abca1", "Apoe", "Scube2", "Cxcl14", "Per3", "Pdzd2", "Epas1", "Tmcc3", "Klf9", "Foxo1", "Gdf10", "Mt1", "H2-K1","Top2a", "Cenpf", "Pclaf", "Ube2c", "Cks2", "Cdk1", "Mest", "Ptn", "H19", "Lmnb1", "Agtr2", "H2afx", "Smc2", "Fbn2", "Dlk1", "Hmgn2", "Stmn1", "Hmgb2", "Nrk", "Dut"),])
+
+df <- df[,stromal_NOX$CellType_II %in% c("Ly6a+ L-MSC")]
+
+df <- scale(t(df), scale=T, center=T)
+df <- as.data.frame(df)
+
+df$CellType_II <- paste0(stromal_NOX$CellType_II[rownames(df)], " ", stromal_NOX$Age[row.names(df)])
+
+df <- gather(df, key="Gene", value="Expression", -CellType_II)
+
+df <- df %>%
+  group_by(CellType_II, Gene) %>%
+  summarize(AvgExp = mean(Expression), Frequency = (sum(Expression > 0) / length(Expression))*100)
+```
+
+```{r}
+write.csv(df, file="C:/Users/.../df_CellTypeII.csv", quote=F)
+```
+```{r}
+df <- read.csv("C:/Users/.../df_CellTypeII.csv",row.names=1)
+```
+
+Plot
+```{r}
+dot_plot <- ggplot(df, aes (x=reorder(Gene, AvgExp), y= CellType_II)) +
+  geom_point(color="black", pch=21, aes(size=Frequency, fill=AvgExp)) +
+  scale_size(range=c(0,15), name = "Percent Expressed", limits = c(0, 100)) +
+  scale_fill_viridis(option="D", name="Relative Expression") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1, color="black", size=15),
+        axis.text.y = element_text(size=15, color="black"),
+        axis.title = element_blank()) 
+dot_plot
+```
+
+```{r}
+ggsave(dot_plot, filename = "C:/Users/.../GellTypeII genes_NOX.png", width=21, height=4.75, dpi=600)
+```
+
+
+#DotPlot_NOX_only genes of Ly6a+ L-MSCs
+```{r}
+df <- as.matrix(stromal_NOX[["RNA"]]@data[c("Mmp3", "Podn", "Mt1", "C1s1", "Timp3", "Igfbp6", "Abca8a", "C3", "Agtr2", "Dlk1", "Cdkn1c"),])
+
+df <- df[,stromal_NOX$Groups %in% c("Ly6a+", "Ly6a-")]
+df <- scale(t(df), scale=T, center=T)
+df <- as.data.frame(df)
+
+df$Groups <- paste0(stromal_NOX$Groups[rownames(df)], " ", stromal_NOX$Age[rownames(df)])
+
+df <- gather(df, key="Gene", value="Expression", -Groups)
+
+df <- df %>%
+  group_by(Groups, Gene) %>%
+  summarize(AvgExp = mean(Expression), Frequency = (sum(Expression > 0) / length(Expression))*100)
+```
+
+```{r}
+write.csv(df, file="C:/Users/../df_groups.csv", quote=F)
+```
+
+```{r}
+df <- read.csv("C:/Users/.../df_groups.csv",row.names=1)
+```
+
+Plot
+```{r}
+dot_plot <- ggplot(df, aes(x=reorder(Gene, Order),y=Groups)) +
+  geom_point(color="black", pch=21, aes(size=Frequency, fill=AvgExp)) +
+  scale_size (range=c(0,15), name = "Percent Expressed", limits = c(0,100)) +
+  scale_fill_viridis(option="D", name="Relative Expression") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1, color="black", size=20),
+        axis.text.y = element_text(size=20, color="black"),
+        axis.title = element_blank())
+dot_plot
+```
+```{r}
+ggsave(dot_plot, filename = "C:/Users/.../Groups genes_NOX.png", width=10, height=5, dpi=600)
+```
+
+
+
+
+
+#Plot most promising new markers in P7 cells
+```{r}
+DefaultAssay(stromal) <- "RNA"
+stromal_P7 <- colnames(stromal)[stromal$Age %in% c("P7")]
+stromal_P7<- subset(stromal, cells=stromal_P7)
+```
+
+
+#MAKE SIMPLIFIED HEATMAP_best markers
+```{r}
+Idents(stromal_P7)<- "Ly6aGroups"
+```
+
+```{r}
+stromal.markers <- read.csv("C:/Users/.../best markers_P7.csv",row.names=1)
+```
+# Get list of clusters/cell types
+```{r}
+cluster_list <- levels(Idents(stromal_P7))
+```
+# Get top markers
+```{r}
+top_markers <- stromal.markers %>% 
+  group_by(cluster) %>% 
+  pull(gene) 
+```
+# Make function to calculate average expression in each cluster
+```{r}
+getAvgExp <- function(cluster){
+  cells <- colnames(stromal_P7)[Idents(stromal_P7) == cluster] 
+  avg <- rowMeans(as.matrix(stromal_P7[["RNA"]]@data[top_markers, cells])) 
+  return(avg)}
+```
+# Calculate average expression of top_markers in each cluster
+```{r}
+avg_exp <- lapply(cluster_list, getAvgExp)
+avg_exp <- do.call("cbind", avg_exp)
+colnames(avg_exp) <- cluster_list
+```
+# Transform values to Z-scores
+```{r}
+avg_exp <- t(scale(t(avg_exp), scale=T, center=T))
+```
+# Make heatmap
+```{r}
+pheatmap(t(avg_exp),
+         color = viridis::inferno(105),
+         cluster_rows = F, 
+         cluster_cols = F,
+         border_color="black",
+         breaks = seq(-0.5, 2, length.out=101), 
+         legend=T,
+         filename = "C:/Users/.../Simplified heatmap_in vivo_markers_P7.png", dpi=600, width = 15, height = 2.3)
+```
+
+
+#Dotplot_Best potential L-MSC markers
+```{r}
+df <- as.matrix(stromal_P7[["RNA"]]@data[c("Acta2", "Actg2", "Col14a1", "Col1a1", "Col1a2", "Col3a1", "Clec3b", "Cygb", "Dcn", "Fst", "Itm2a", "Igfbp6", "Ifi27l2a", "Has1", "Il33", "Lum", "Meg3", "Mfap5", "Nrk", "Postn", "Pi16", "Prrx1", "Serpina3n", "Serpinf1", "Timp1", "Tnxb", "S100a10", "S100a6", "Ptn", "Cxcl1", "Akap12", "C3"),])
+
+df <- df[,stromal_P7$Groups %in% c("Ly6a-", "Ly6a+")]
+
+df <- scale(t(df), scale=T, center=T)
+df <- as.data.frame(df)
+
+df$Groups <- paste0(stromal_P7$Groups[rownames(df)], " ", stromal_P7$Oxygen[rownames(df)])
+
+df <- gather(df, key="Gene", value="Expression", -Groups)
+
+df <- df %>%
+  group_by(Groups, Gene) %>%
+  summarize(AvgExp = mean(Expression), Frequency = (sum(Expression > 0) / length(Expression))*100)
+```
+
+Plot
+```{r}
+dot_plot <- ggplot(df, aes(x=reorder(Gene, AvgExp), y=Groups)) +
+  geom_point(color="black", pch=21, aes(size=Frequency, fill=AvgExp)) +
+  scale_size(range=c(0,15), name = "Percent Expressed") +
+  scale_fill_viridis(option="C", name="Relative Expression") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1, color="black", size=15),
+        axis.text.y = element_text(size=17, color="black"),
+        axis.title = element_blank())
+
+dot_plot
+```
+
+```{r}
+ggsave(dot_plot, filename = "C:/Users/.../Best L-MSC markers_in vivo.png", width=20, height=4.6, dpi=600)
+```
