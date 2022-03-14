@@ -1,1 +1,2 @@
 # Single-cell-RNA-sequencing-based-characterization-of-resident-lung-MSCs-in-BPD
+This repository pertains to data published in: I Mižíková, F Lesage, C Cyr-Depauw, D P Cook, M Hurskainen, S M Hänninen, A Vadivel, P Bardin, S Zhong, O Carpén, B C Vanderhyden, B Thébaud, Single-cell RNA sequencing-based characterization of resident lung mesenchymal stromal cells in bronchopulmonary dysplasia, Stem Cells, 2022;, sxab023, https://doi.org/10.1093/stmcls/sxab023
